@@ -48,6 +48,7 @@ class State:
         self.serial = 0
         self.apps: dict[str, dict[str, Any]] = {}
         self.app_volumes: dict[str, list[Any]] = {}
+        self.workflows: dict[str, list[Any]] = {}
         self.busy_once = True
         self.agent_command = "true"
         self.agent_finished: list[dict[str, Any]] = []
@@ -383,7 +384,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._detail(404, "unknown app")
             return self._send(200, found)
         if parts[0] == "workflows" and len(parts) == 2:
-            stages = [{"name": "a", "app": "embed", "depends": []}, {"name": "b", "app": "rerank", "depends": ["a"]}]
+            with STATE.lock:
+                if method == "PUT":
+                    STATE.workflows[parts[1]] = body.get("stages", [])
+                default = [{"name": "a", "app": "embed", "depends": []}, {"name": "b", "app": "rerank", "depends": ["a"]}]
+                stages = STATE.workflows.get(parts[1], default)
             return self._send(200, {"name": parts[1], "stages": stages})
         return self._detail(404, "unknown route")
 
