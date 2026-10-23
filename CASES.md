@@ -25,6 +25,14 @@ with `POST /_test/files`, and checks the result with `GET /_test/state`.
 every request; `SURFRA_API_KEY`; `SURFRA_REPLICA_TOKEN`; the session saved by `surfra login` in
 `~/.surfra/config.json` under `"token"`. None of these: an error that says to set `SURFRA_API_KEY`.
 
+**Control-plane credentials.** Calls to the control plane (apps, workflows, jobs, volume names) use an
+explicit key, then `SURFRA_API_KEY`, then the saved login. They never send the volumes token from
+`SURFRA_VOLUMES_TOKEN_FILE`, which only the volumes service accepts. Inside a job, `SURFRA_API_KEY` is the
+job's own key when the job may call apps.
+
+**Rate limits.** Submitting a call or a workflow run that gets `429` waits for `Retry-After` (at least one
+second, at most 60) and tries again, up to five times.
+
 **Errors.** A failed request raises the SDK's error type carrying the HTTP status and the service's reason,
 read from `{"error": ...}` (volumes) or `{"detail": ...}` (control plane).
 
@@ -48,6 +56,21 @@ Writing to a volume that does not exist yet (`404` whose reason starts with "no 
   `mtime_ns` changed, deletes from the volume files the state lists that are gone locally (mode `rw`
   only), and saves the state. It returns how many it uploaded and deleted.
 
+## The surface
+
+Every SDK has these, named the way its language names things (`put_file`, `putFile`, `PutFile`):
+
+| Object | Has |
+| --- | --- |
+| Volume | `path(p).local(mode, refresh)`, `path(p).download(dest)`, `read`, `write`, `put_file`, `put_directory`, `ls(prefix, recursive)`, `rm` (and recursive), `commit`, `create`, `info`, `delete`, list all volumes, `grant(mode)` |
+| App | `deploy(image, entrypoint, env, autoscale, runtime)`, `run(input)`, `enqueue(input)`, `info`, `volumes`, `set_volumes` |
+| Workflow | `run(input)`, `enqueue(input)` |
+| Call | `get`, `result` |
+| Jobs | `submit_job(spec)`, `job(id)`; a job has `get`, `stop`, `wait`, `logs(after)` |
+
+Language-specific: the Python handler runtime (`@surfra.handler`, `warmup`, `batch_size`, `progress`,
+stages) and the `surfra` CLI. Apps in other languages are HTTP servers, which the Surfra supervisor runs.
+
 ## Cases
 
 | Id | Behavior |
@@ -68,4 +91,11 @@ Writing to a volume that does not exist yet (`404` whose reason starts with "no 
 | v14 | A state file written by another SDK is honored: files it lists with matching ETag, size and `mtime_ns` are not downloaded again |
 | a01 | `run(app, input)` returns the output: the fake answers `{"app": <app>, "echo": <input>}` |
 | a02 | `enqueue` returns a call; its `result` returns the same output; a failed call raises with the stage's error |
+| v15 | `write` then `read` round-trips bytes without a local file |
+| c01 | With both a volumes token file and an API key, control-plane calls send the API key and volume calls send the token |
+| a03 | `App(name).deploy(...)` sends `PUT /v1/apps/<name>` with the image, entrypoint and autoscale, and returns the saved app |
+| a04 | `App(name).run(input)` returns the output; `set_volumes(["weights:r"])` then `volumes()` returns `[{"volume": "weights", "mode": "r"}]` |
+| a05 | A call submitted while the server answers `429` once waits and succeeds |
+| w01 | `Workflow(name).run(input)` reads the workflow, runs it, and returns `{stage: output}` for its two stages |
 | j01 | Submitting a job with volumes sends them; waiting returns status `succeeded` and exit code 0 |
+| j02 | A job's `logs` returns its lines oldest first, as `{"t", "s", "m"}` |

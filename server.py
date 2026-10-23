@@ -46,6 +46,11 @@ class State:
         self.downloads = 0
         self.uploads_done = 0
         self.serial = 0
+        self.apps: dict[str, dict[str, Any]] = {}
+        self.app_volumes: dict[str, list[Any]] = {}
+        self.busy_once = True
+        self.agent_command = "true"
+        self.agent_finished: list[dict[str, Any]] = []
 
     def next_id(self, prefix: str) -> str:
         self.serial += 1
@@ -101,10 +106,17 @@ class Handler(BaseHTTPRequestHandler):
             STATE.log.append({"method": self.command, "path": path, "query": query, "auth": self.headers.get("Authorization")})
         if path.startswith("/_test/"):
             return self._test(path)
+        if path.startswith("/v1/jobs/agent/") or path == "/v1/workers/logs":
+            return self._agent(path)
+        if path == "/v1/tokens":
+            self._body()
+            if not (self.headers.get("Authorization") or "").startswith("Bearer sfp_"):
+                return self._detail(401, "unknown or expired credential")
+            return self._send(200, {"token": "vol.tok.en", "expires_at": int(time.time()) + 900})
         if not (self.headers.get("Authorization") or "").startswith("Bearer "):
             return self._error(401, "send a Surfra API key as Authorization: Bearer")
         parts = path.split("/")
-        if path.startswith("/v1/volumes") or path.startswith("/v1/transactions") or path.startswith("/v1/jobs") or path.startswith("/v1/apps"):
+        if path.split("/")[2:3] and path.split("/")[2] in ("volumes", "transactions", "jobs", "apps", "workflows"):
             return self._control(path, query)
         if len(parts) >= 4 and parts[1] == "v1":
             return self._volume(unquote(parts[2]), parts[3], "/".join(parts[4:]), query)
@@ -128,11 +140,35 @@ class Handler(BaseHTTPRequestHandler):
                 STATE.volumes.setdefault(body["volume"], STATE.next_id("vol"))
                 STATE.files.setdefault(body["volume"], {})[body["path"]] = body["body"].encode()
             return self._send(200, {"ok": True})
+        if path == "/_test/agent":
+            body = self._json()
+            with STATE.lock:
+                STATE.agent_command = body["command"]
+            return self._send(200, {"ok": True})
         if path == "/_test/state":
             with STATE.lock:
                 files = {volume: {key: {"etag": etag(data), "size": len(data), "body": data.decode(errors="replace")} for key, data in items.items()} for volume, items in STATE.files.items()}
-                return self._send(200, {"files": files, "downloads": STATE.downloads, "uploads": STATE.uploads_done, "log": STATE.log, "jobs": STATE.jobs})
+                return self._send(200, {"files": files, "downloads": STATE.downloads, "uploads": STATE.uploads_done, "log": STATE.log, "jobs": STATE.jobs, "agent_finished": STATE.agent_finished})
         return self._error(404, "unknown test route")
+
+    # The job agent's side of the control plane --------------------------------------------
+
+    def _agent(self, path: str) -> None:
+        raw = self._body()
+        body = json.loads(raw) if path.endswith("/finish") and raw else {}
+        if not (self.headers.get("X-Surfra-Replica-Token") or "").startswith("sfp_"):
+            return self._detail(401, "unknown replica")
+        if path == "/v1/jobs/agent/start":
+            with STATE.lock:
+                command = STATE.agent_command
+            return self._send(200, {"run": True, "command": command, "grace_sec": 5, "heartbeat_sec": 1, "deadline_at": None})
+        if path == "/v1/jobs/agent/heartbeat":
+            return self._send(200, {"stop": "", "tail": False})
+        if path == "/v1/jobs/agent/finish":
+            with STATE.lock:
+                STATE.agent_finished.append(body or {})
+            return self._send(200, {"status": "ok"})
+        return self._send(200, {"ok": True})
 
     # Volumes service -------------------------------------------------------------------------
 
@@ -283,6 +319,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"deleted": name})
             return self._send(200, {"id": STATE.volumes[name], "name": name, "bytes": 0, "objects": 0, "used_by": []})
         if parts[0] == "transactions":
+            if method == "POST" and any(stage.get("app_name") == "busy" for stage in body.get("stages") or []):
+                with STATE.lock:
+                    first, STATE.busy_once = STATE.busy_once, False
+                if first:
+                    return self._send(429, {"detail": "over the request rate"}, headers={"Retry-After": "1"})
             if method == "POST":
                 transaction = STATE.next_id("tx")
                 stages = [{"name": stage["name"], "app_name": stage["app_name"], "status": "succeeded", "output": {"app": stage["app_name"], "echo": stage.get("input")}} for stage in body.get("stages") or []]
@@ -314,6 +355,10 @@ class Handler(BaseHTTPRequestHandler):
                 found = STATE.jobs.get(parts[1])
             if not found:
                 return self._detail(404, "unknown job")
+            if len(parts) == 3 and parts[2] == "logs":
+                lines = [{"t": f"2026-10-22T00:00:0{n}.000Z", "s": "out", "m": f"line {n}"} for n in range(3)]
+                after = query.get("after")
+                return self._send(200, {"lines": [line for line in lines if not after or line["t"] > after]})
             if len(parts) == 3 and parts[2] == "stop":
                 found["status"] = "stopped"
             else:
@@ -324,7 +369,22 @@ class Handler(BaseHTTPRequestHandler):
                     found["status"], found["exit_code"] = "succeeded", 0
             return self._send(200, {key: value for key, value in found.items() if key != "polls"})
         if parts[0] == "apps" and len(parts) == 3 and parts[2] == "volumes":
-            return self._send(200, {"volumes": body.get("volumes", []) if method == "PUT" else []})
+            with STATE.lock:
+                if method == "PUT":
+                    STATE.app_volumes[parts[1]] = [item if isinstance(item, dict) else {"volume": item.split(":")[0], "mode": (item.split(":") + ["r"])[1]} for item in body.get("volumes", [])]
+                return self._send(200, {"volumes": STATE.app_volumes.get(parts[1], [])})
+        if parts[0] == "apps" and len(parts) == 2:
+            with STATE.lock:
+                if method == "PUT":
+                    found = STATE.apps.setdefault(parts[1], {"id": STATE.next_id("sfa"), "name": parts[1]})
+                    found.update({key: body.get(key) for key in ("image", "entrypoint", "env", "registry", "autoscale", "runtime") if key in body})
+                found = STATE.apps.get(parts[1])
+            if not found:
+                return self._detail(404, "unknown app")
+            return self._send(200, found)
+        if parts[0] == "workflows" and len(parts) == 2:
+            stages = [{"name": "a", "app": "embed", "depends": []}, {"name": "b", "app": "rerank", "depends": ["a"]}]
+            return self._send(200, {"name": parts[1], "stages": stages})
         return self._detail(404, "unknown route")
 
 
