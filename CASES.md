@@ -65,7 +65,7 @@ Every SDK has these, named the way its language names things (`put_file`, `putFi
 | Volume | `path(p).local(mode, refresh)`, `path(p).download(dest)`, `read`, `write`, `put_file`, `put_directory`, `ls(prefix, recursive)`, `rm` (and recursive), `commit`, `create`, `info`, `delete`, list all volumes, `grant(mode)` |
 | App | `deploy(image, entrypoint, env, autoscale, runtime)`, `run(input)`, `enqueue(input)`, `info`, `volumes`, `set_volumes` |
 | Workflow | `deploy(stages)`, `run(input)`, `enqueue(input)` |
-| Call | `get`, `result` |
+| Call | from `submit`'s view; `get`, `result` |
 | Jobs | `submit_job(spec)`, `job(id)`; a job has `get`, `stop`, `wait`, `logs(after)` |
 
 Language-specific: the Python handler runtime (`@surfra.handler`, `warmup`, `batch_size`, `progress`,
@@ -96,6 +96,7 @@ stages) and the `surfra` CLI. Apps in other languages are HTTP servers, which th
 | a03 | `App(name).deploy(...)` sends `PUT /v1/apps/<name>` with the image, entrypoint and autoscale, and returns the saved app |
 | a04 | `App(name).run(input)` returns the output; `set_volumes(["weights:r"])` then `volumes()` returns `[{"volume": "weights", "mode": "r"}]` |
 | a05 | A call submitted while the server answers `429` once waits and succeeds |
+| a06 | `submit(stages)` with two stages, wrapped in a call, returns `{stage: output}` from `result` |
 | w01 | `Workflow(name).run(input)` reads the workflow, runs it, and returns `{stage: output}` for its two stages |
 | w02 | `Workflow(name).deploy(stages)` sends `PUT /v1/workflows/<name>` with the stages; a run afterwards uses them |
 | j01 | Submitting a job with volumes sends them; waiting returns status `succeeded` and exit code 0 |
