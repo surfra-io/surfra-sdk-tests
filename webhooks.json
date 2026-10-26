@@ -1,0 +1,94 @@
+{
+  "about": "Callback signature vectors. signature is the X-Surfra-Signature header: t=<unix seconds>,v1=<hex HMAC-SHA256(secret, \"<t>.<raw body>\")>, with one v1 per signing secret. body is the exact UTF-8 bytes. now is the verifier's clock. Tolerance is 300 seconds either way.",
+  "tolerance_seconds": 300,
+  "cases": [
+    {
+      "name": "valid",
+      "secret": "whsec_test_new_9f8e7d6c5b4a",
+      "signature": "t=1761415391,v1=2a874e1fbc20597b5eb4c807b854441f30b5074c88d3c617a634c5babcfff57e",
+      "body": "{\"type\":\"task.updated\",\"seq\":7,\"task\":{\"id\":\"tx_example\",\"status\":\"succeeded\",\"progress\":1.0,\"metadata\":{\"order\":\"A-17\"},\"stages\":[{\"id\":\"stg_1\",\"name\":\"call\",\"app\":\"embed\",\"status\":\"succeeded\",\"attempt\":0,\"progress\":null,\"error\":null}],\"output\":{\"text\":\"héllo\"}}}",
+      "now": 1761415401,
+      "ok": true
+    },
+    {
+      "name": "valid at the edge of the window",
+      "secret": "whsec_test_new_9f8e7d6c5b4a",
+      "signature": "t=1761415391,v1=2a874e1fbc20597b5eb4c807b854441f30b5074c88d3c617a634c5babcfff57e",
+      "body": "{\"type\":\"task.updated\",\"seq\":7,\"task\":{\"id\":\"tx_example\",\"status\":\"succeeded\",\"progress\":1.0,\"metadata\":{\"order\":\"A-17\"},\"stages\":[{\"id\":\"stg_1\",\"name\":\"call\",\"app\":\"embed\",\"status\":\"succeeded\",\"attempt\":0,\"progress\":null,\"error\":null}],\"output\":{\"text\":\"héllo\"}}}",
+      "now": 1761415691,
+      "ok": true
+    },
+    {
+      "name": "rotation: the old secret still verifies",
+      "secret": "whsec_test_old_1a2b3c4d5e6f",
+      "signature": "t=1761415391,v1=2a874e1fbc20597b5eb4c807b854441f30b5074c88d3c617a634c5babcfff57e,v1=c10a316a9f703c026a998b6ca96b2d8c1c6a7af072a32c3279586281bf0b7d6c",
+      "body": "{\"type\":\"task.updated\",\"seq\":7,\"task\":{\"id\":\"tx_example\",\"status\":\"succeeded\",\"progress\":1.0,\"metadata\":{\"order\":\"A-17\"},\"stages\":[{\"id\":\"stg_1\",\"name\":\"call\",\"app\":\"embed\",\"status\":\"succeeded\",\"attempt\":0,\"progress\":null,\"error\":null}],\"output\":{\"text\":\"héllo\"}}}",
+      "now": 1761415391,
+      "ok": true
+    },
+    {
+      "name": "rotation: the new secret verifies",
+      "secret": "whsec_test_new_9f8e7d6c5b4a",
+      "signature": "t=1761415391,v1=2a874e1fbc20597b5eb4c807b854441f30b5074c88d3c617a634c5babcfff57e,v1=c10a316a9f703c026a998b6ca96b2d8c1c6a7af072a32c3279586281bf0b7d6c",
+      "body": "{\"type\":\"task.updated\",\"seq\":7,\"task\":{\"id\":\"tx_example\",\"status\":\"succeeded\",\"progress\":1.0,\"metadata\":{\"order\":\"A-17\"},\"stages\":[{\"id\":\"stg_1\",\"name\":\"call\",\"app\":\"embed\",\"status\":\"succeeded\",\"attempt\":0,\"progress\":null,\"error\":null}],\"output\":{\"text\":\"héllo\"}}}",
+      "now": 1761415391,
+      "ok": true
+    },
+    {
+      "name": "body changed",
+      "secret": "whsec_test_new_9f8e7d6c5b4a",
+      "signature": "t=1761415391,v1=2a874e1fbc20597b5eb4c807b854441f30b5074c88d3c617a634c5babcfff57e",
+      "body": "{\"type\":\"task.updated\",\"seq\":7,\"task\":{\"id\":\"tx_example\",\"status\":\"succeeded\",\"progress\":1.0,\"metadata\":{\"order\":\"A-18\"},\"stages\":[{\"id\":\"stg_1\",\"name\":\"call\",\"app\":\"embed\",\"status\":\"succeeded\",\"attempt\":0,\"progress\":null,\"error\":null}],\"output\":{\"text\":\"héllo\"}}}",
+      "now": 1761415391,
+      "ok": false
+    },
+    {
+      "name": "wrong secret",
+      "secret": "whsec_someone_else",
+      "signature": "t=1761415391,v1=2a874e1fbc20597b5eb4c807b854441f30b5074c88d3c617a634c5babcfff57e",
+      "body": "{\"type\":\"task.updated\",\"seq\":7,\"task\":{\"id\":\"tx_example\",\"status\":\"succeeded\",\"progress\":1.0,\"metadata\":{\"order\":\"A-17\"},\"stages\":[{\"id\":\"stg_1\",\"name\":\"call\",\"app\":\"embed\",\"status\":\"succeeded\",\"attempt\":0,\"progress\":null,\"error\":null}],\"output\":{\"text\":\"héllo\"}}}",
+      "now": 1761415391,
+      "ok": false
+    },
+    {
+      "name": "too old: a replay",
+      "secret": "whsec_test_new_9f8e7d6c5b4a",
+      "signature": "t=1761415391,v1=2a874e1fbc20597b5eb4c807b854441f30b5074c88d3c617a634c5babcfff57e",
+      "body": "{\"type\":\"task.updated\",\"seq\":7,\"task\":{\"id\":\"tx_example\",\"status\":\"succeeded\",\"progress\":1.0,\"metadata\":{\"order\":\"A-17\"},\"stages\":[{\"id\":\"stg_1\",\"name\":\"call\",\"app\":\"embed\",\"status\":\"succeeded\",\"attempt\":0,\"progress\":null,\"error\":null}],\"output\":{\"text\":\"héllo\"}}}",
+      "now": 1761415692,
+      "ok": false
+    },
+    {
+      "name": "too far in the future",
+      "secret": "whsec_test_new_9f8e7d6c5b4a",
+      "signature": "t=1761415391,v1=2a874e1fbc20597b5eb4c807b854441f30b5074c88d3c617a634c5babcfff57e",
+      "body": "{\"type\":\"task.updated\",\"seq\":7,\"task\":{\"id\":\"tx_example\",\"status\":\"succeeded\",\"progress\":1.0,\"metadata\":{\"order\":\"A-17\"},\"stages\":[{\"id\":\"stg_1\",\"name\":\"call\",\"app\":\"embed\",\"status\":\"succeeded\",\"attempt\":0,\"progress\":null,\"error\":null}],\"output\":{\"text\":\"héllo\"}}}",
+      "now": 1761415090,
+      "ok": false
+    },
+    {
+      "name": "no timestamp",
+      "secret": "whsec_test_new_9f8e7d6c5b4a",
+      "signature": "v1=2a874e1fbc20597b5eb4c807b854441f30b5074c88d3c617a634c5babcfff57e",
+      "body": "{\"type\":\"task.updated\",\"seq\":7,\"task\":{\"id\":\"tx_example\",\"status\":\"succeeded\",\"progress\":1.0,\"metadata\":{\"order\":\"A-17\"},\"stages\":[{\"id\":\"stg_1\",\"name\":\"call\",\"app\":\"embed\",\"status\":\"succeeded\",\"attempt\":0,\"progress\":null,\"error\":null}],\"output\":{\"text\":\"héllo\"}}}",
+      "now": 1761415391,
+      "ok": false
+    },
+    {
+      "name": "no v1",
+      "secret": "whsec_test_new_9f8e7d6c5b4a",
+      "signature": "t=1761415391",
+      "body": "{\"type\":\"task.updated\",\"seq\":7,\"task\":{\"id\":\"tx_example\",\"status\":\"succeeded\",\"progress\":1.0,\"metadata\":{\"order\":\"A-17\"},\"stages\":[{\"id\":\"stg_1\",\"name\":\"call\",\"app\":\"embed\",\"status\":\"succeeded\",\"attempt\":0,\"progress\":null,\"error\":null}],\"output\":{\"text\":\"héllo\"}}}",
+      "now": 1761415391,
+      "ok": false
+    },
+    {
+      "name": "empty header",
+      "secret": "whsec_test_new_9f8e7d6c5b4a",
+      "signature": "",
+      "body": "{\"type\":\"task.updated\",\"seq\":7,\"task\":{\"id\":\"tx_example\",\"status\":\"succeeded\",\"progress\":1.0,\"metadata\":{\"order\":\"A-17\"},\"stages\":[{\"id\":\"stg_1\",\"name\":\"call\",\"app\":\"embed\",\"status\":\"succeeded\",\"attempt\":0,\"progress\":null,\"error\":null}],\"output\":{\"text\":\"héllo\"}}}",
+      "now": 1761415391,
+      "ok": false
+    }
+  ]
+}

@@ -101,3 +101,4 @@ stages) and the `surfra` CLI. Apps in other languages are HTTP servers, which th
 | w02 | `Workflow(name).deploy(stages)` sends `PUT /v1/workflows/<name>` with the stages; a run afterwards uses them |
 | j01 | Submitting a job with volumes sends them; waiting returns status `succeeded` and exit code 0 |
 | j02 | A job's `logs` returns its lines oldest first, as `{"t", "s", "m"}` |
+| h01 | The callback signature verifier accepts every `"ok": true` case in `webhooks.json` and returns the parsed body, and rejects every `"ok": false` case (bad signature, changed body, timestamp more than 300 s away, malformed header) |
