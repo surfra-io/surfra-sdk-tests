@@ -71,6 +71,39 @@ Every SDK has these, named the way its language names things (`put_file`, `putFi
 Language-specific: the Python handler runtime (`@surfra.handler`, `warmup`, `batch_size`, `progress`,
 stages) and the `surfra` CLI. Apps in other languages are HTTP servers, which the Surfra supervisor runs.
 
+## Retries
+
+Every SDK, sync and async, retries overload answers from Surfra the same way. Surfra answers an overload
+with a typed error and, when the request is safe to repeat, nothing was queued:
+
+| Answer | `error.type` | Retry? |
+| --- | --- | --- |
+| 429 | `RATE_LIMITED` (the org's own per-minute limit; any 429) | yes, every method |
+| 503 | `QUEUE_FULL` (the app's queue is as long as its machines can clear soon) | yes, every method |
+| 503 | `SERVER_BUSY` (the API is short of database connections) | yes, every method |
+| 503 | `APP_PAUSED`, `DEFCON_ACTIVE` | **no** |
+| 402 | `HTTP_CALLS_LIMIT` (the organization used its included HTTP calls this month and has no card on file) | **no** |
+| 502, 503, 504 with no Surfra error body (the platform edge during a deploy) | none | `GET` only |
+| 504 or a dropped connection after a submission was sent (`POST` of a run, transaction or job) | | **no**: it may be running |
+| A connection that never reached the server (refused, DNS, connect timeout) | | yes, every method |
+| A connection dropped after the request was sent | | `GET` only |
+| Any other 4xx | | no |
+
+The body is `{"detail": "<message>", "error": {"type": "<TYPE>", "message": "<message>", "retry_after": <seconds>}}`,
+with a `Retry-After: <seconds>` header on retryable answers. A "Surfra error body" is JSON with `error.type`.
+
+**Wait.** `Retry-After` seconds when present (the header, else `error.retry_after`). Otherwise exponential
+backoff with full jitter: a random wait from 0 to `min(30 s, 0.5 s × 2^n)` before retry n+1.
+
+**Limits.** At most 8 attempts (`max_retries = 7` retries) and 3 minutes from the first attempt
+(`retry_deadline`), both configurable per client and per call. A wait that would end past the deadline is
+not taken: the SDK gives up at once with the last error.
+
+**Errors.** The final error carries the HTTP status, `error.type` (or none), the server's message, the
+number of attempts, and whether the outcome is unknown (a submission that got a 504 or lost its
+connection after it was sent: it may be running; check it, or submit with `submit` / `enqueue` and poll).
+Every retry is logged, or reported to a hook, with the attempt, the reason and the wait.
+
 ## Cases
 
 | Id | Behavior |
@@ -102,3 +135,16 @@ stages) and the `surfra` CLI. Apps in other languages are HTTP servers, which th
 | j01 | Submitting a job with volumes sends them; waiting returns status `succeeded` and exit code 0 |
 | j02 | A job's `logs` returns its lines oldest first, as `{"t", "s", "m"}` |
 | h01 | The callback signature verifier accepts every `"ok": true` case in `webhooks.json` and returns the parsed body, and rejects every `"ok": false` case (bad signature, changed body, timestamp more than 300 s away, malformed header) |
+| r01 | A submit answered `429 RATE_LIMITED` with `Retry-After: 1` once waits about a second, retries and succeeds (2 `POST`s) |
+| r02 | A submit answered `503 QUEUE_FULL` (`Retry-After: 0`) once is retried and succeeds |
+| r03 | A `GET` of a transaction answered `503 SERVER_BUSY` once is retried, and the result comes back |
+| r04 | `503 APP_PAUSED` is not retried: one request, and the error carries status 503 and type `APP_PAUSED` |
+| r05 | `503 DEFCON_ACTIVE` is not retried: one request, type `DEFCON_ACTIVE` |
+| r06 | A plain `502` (no Surfra error body) is retried on a `GET`, but not on a submit `POST` (one request, status 502) |
+| r07 | A plain `504` on a submit is not retried, and the error says the outcome is unknown |
+| r08 | A connection dropped after a submit was sent is not retried (outcome unknown); dropped after a `GET`, it is retried |
+| r09 | A `400` is not retried |
+| r10 | A connection refused is retried: with `max_retries = 2` there are 3 attempts, then the connection error |
+| r11 | `503 SERVER_BUSY` every time with `max_retries = 2`: 3 requests, then an error of type `SERVER_BUSY` with 3 attempts |
+| r12 | `Retry-After: 30` with a 2 s retry deadline gives up at once (well under 2 s) after one request |
+| r13 | `402 HTTP_CALLS_LIMIT` on a submit is not retried: one request, and the error carries status 402, type `HTTP_CALLS_LIMIT` and the server's message |

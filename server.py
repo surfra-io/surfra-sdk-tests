@@ -10,6 +10,10 @@ Point an SDK at it with SURFRA_MASTER and SURFRA_VOLUMES_URL both set to that ad
     POST /_test/reset            clear all state
     GET  /_test/state            files (path -> etag, size), counters, the request log
     POST /_test/files            {"volume", "path", "body"} put a file without counting a request
+    POST /_test/faults           {"faults": [{"method", "path", "times", "status", "body", "headers", "drop"}]}
+                                 answer the next `times` requests whose method matches and whose path starts
+                                 with `path` with that status, JSON body and headers instead; "drop": true
+                                 reads the request and closes the connection without answering
 
 It mirrors the real volumes service where SDKs depend on it: Content-Length is required on uploads,
 uploads above the part size are refused, multipart parts must add up, errors are {"error": "..."} with
@@ -50,6 +54,7 @@ class State:
         self.app_volumes: dict[str, list[Any]] = {}
         self.workflows: dict[str, list[Any]] = {}
         self.busy_once = True
+        self.faults: list[dict[str, Any]] = []
         self.agent_command = "true"
         self.agent_finished: list[dict[str, Any]] = []
 
@@ -107,6 +112,19 @@ class Handler(BaseHTTPRequestHandler):
             STATE.log.append({"method": self.command, "path": path, "query": query, "auth": self.headers.get("Authorization")})
         if path.startswith("/_test/"):
             return self._test(path)
+        with STATE.lock:
+            fault = next((item for item in STATE.faults if item.get("method", self.command) == self.command and path.startswith(item["path"]) and item["times"] > 0), None)
+            if fault:
+                fault["times"] -= 1
+        if fault:
+            self._body()
+            if fault.get("drop"):
+                self.close_connection = True  # the request arrived; no answer comes back
+                return None
+            raw = fault.get("raw")
+            if raw is not None:
+                return self._send(fault["status"], raw=raw.encode(), headers=fault.get("headers"))
+            return self._send(fault["status"], fault.get("body"), headers=fault.get("headers"))
         if path.startswith("/v1/jobs/agent/") or path == "/v1/workers/logs":
             return self._agent(path)
         if path == "/v1/tokens":
@@ -140,6 +158,11 @@ class Handler(BaseHTTPRequestHandler):
             with STATE.lock:
                 STATE.volumes.setdefault(body["volume"], STATE.next_id("vol"))
                 STATE.files.setdefault(body["volume"], {})[body["path"]] = body["body"].encode()
+            return self._send(200, {"ok": True})
+        if path == "/_test/faults":
+            body = self._json()
+            with STATE.lock:
+                STATE.faults.extend(dict(item, times=int(item.get("times", 1))) for item in body["faults"])
             return self._send(200, {"ok": True})
         if path == "/_test/agent":
             body = self._json()
